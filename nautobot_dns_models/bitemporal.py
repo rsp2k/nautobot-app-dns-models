@@ -10,26 +10,30 @@ Together they enable point-in-time replay ("what did we believe about zone X
 on 2026-03-15?") and unambiguous reconciliation with late-arriving data from
 registrars or external probes.
 
-The implementation follows the sequenced-amend pattern: every "update" is
-actually two writes inside a transaction -- close the prior belief window,
-then insert a new row carrying the new field values with a fresh ``entry_id``.
-Foreign keys still point at the natural key (current belief) so the rest of
-the Nautobot stack (UI, REST, GraphQL, webhooks) behaves normally.
+**Mutation contract**:
+
+- ``obj.save()`` does a standard Django in-place UPDATE. The pk is stable.
+- ``obj.amend(field=new_value)`` does the sequenced amend: close the prior
+  ``recorded_during`` window, INSERT a successor row with a fresh
+  ``entry_id``, and rebind ``self`` to the successor.
+
+This split matters because Nautobot's UI views, REST endpoints, and the
+testing framework all assume ``save()`` is in-place. Routing belief-log
+mutations through an explicit ``amend()`` keeps both contracts intact.
 
 PostgreSQL-only. The migration that physically adds the columns is a no-op on
 non-Postgres backends; the mixin's runtime methods detect ``vendor != 'postgresql'``
-and fall back to plain save semantics so MySQL deployments keep working
-without the bitemporal features.
+and ``amend()`` falls back to a plain in-place UPDATE there.
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Iterable
 
 from django.conf import settings
 from django.db import models, transaction
 from django.utils import timezone
+from nautobot.core.models.managers import BaseManager
 from nautobot.core.models.querysets import RestrictedQuerySet
 
 
@@ -51,21 +55,6 @@ def _default_db_is_postgres() -> bool:
 # app modules are imported. Conditioned on the *default* connection because
 # Nautobot apps only support a single primary DB.
 BITEMPORAL_ENABLED = _default_db_is_postgres()
-
-
-# Fields excluded from change detection. Modifications to these fields alone
-# do NOT trigger a sequenced amend (no new belief row is created).
-DEFAULT_UNTRACKED_FIELDS = frozenset(
-    {
-        "id",
-        "created",
-        "last_updated",
-        "_custom_field_data",
-        "valid_during",
-        "recorded_during",
-        "entry_id",
-    }
-)
 
 
 if BITEMPORAL_ENABLED:
@@ -121,8 +110,12 @@ class BitemporalQuerySet(RestrictedQuerySet):
         return self.all()
 
 
-class BitemporalManager(models.Manager.from_queryset(BitemporalQuerySet)):
+class BitemporalManager(BaseManager.from_queryset(BitemporalQuerySet)):
     """Default manager that filters to the *current* belief row.
+
+    Inherits Nautobot's ``BaseManager`` so ``get_by_natural_key()`` works
+    (Nautobot's serializer framework and ``test_natural_key_symmetry`` both
+    depend on it being available on every model manager).
 
     Diverges from the bitemporal-rule convention of "``all()`` means all rows"
     on purpose: Nautobot's viewsets, GraphQL nodes, webhook dispatchers and
@@ -137,30 +130,26 @@ class BitemporalManager(models.Manager.from_queryset(BitemporalQuerySet)):
         return qs
 
 
-class AllVersionsManager(models.Manager.from_queryset(BitemporalQuerySet)):
+class AllVersionsManager(BaseManager.from_queryset(BitemporalQuerySet)):
     """Non-default manager that returns every belief row including amended-away ones."""
 
 
 class BitemporalMixin(models.Model):
     """
-    Abstract mixin that gives a model two time axes plus sequenced-amend semantics.
+    Abstract mixin that gives a model two time axes plus an explicit
+    ``amend()`` method for sequenced amends.
 
     Concrete models inheriting this gain three columns (on Postgres):
 
     - ``valid_during``: when the fact was/is true in the world
     - ``recorded_during``: when this row was the current belief
-    - ``entry_id``: distinguishes successive belief rows about the same natural key
+    - ``entry_id``: distinguishes successive belief rows about the same
+      natural key
 
-    Calls to ``.save()`` on an existing row trigger a sequenced amend: the
-    prior row's ``recorded_during.upper`` is closed and a new row is inserted
-    carrying the changed field values with a fresh ``entry_id``. The Python
-    instance is mutated to point at the new row so callers can keep using it
-    transparently.
+    ``save()`` is a plain Django save -- in-place UPDATE on existing rows,
+    pk stable. Use :meth:`amend` to create a new belief row reflecting a
+    real-world change. See the module docstring for the mutation contract.
     """
-
-    # Subclasses may override to include/exclude specific fields from change
-    # detection. By default everything not in DEFAULT_UNTRACKED_FIELDS counts.
-    BITEMPORAL_UNTRACKED_FIELDS: frozenset = DEFAULT_UNTRACKED_FIELDS
 
     if BITEMPORAL_ENABLED:
         valid_during = DateTimeRangeField(
@@ -190,83 +179,73 @@ class BitemporalMixin(models.Model):
         # expectations. Callers needing the full belief log should reach for
         # `Model.all_versions` explicitly.
 
-    # ------------------------------------------------------------------ helpers
-
-    @classmethod
-    def from_db(cls, db, field_names, values):
-        """Snapshot tracked-field values at load time for change detection.
-
-        Stashing the DB state on the instance avoids an extra SELECT on each
-        save() to figure out which fields changed.
-        """
-        instance = super().from_db(db, field_names, values)
-        instance._bitemporal_db_state = dict(zip(field_names, values))
-        return instance
-
-    def _tracked_field_names(self) -> Iterable[str]:
-        """Concrete field names that count for change detection."""
-        untracked = set(self.BITEMPORAL_UNTRACKED_FIELDS)
-        for field in self._meta.concrete_fields:
-            if field.name in untracked:
-                continue
-            # FK columns -- compare the *_id (attname) to avoid lazy-loading the
-            # related object.
-            yield field.attname
-
-    def _has_tracked_changes(self) -> bool:
-        """Compare in-memory state vs DB state on tracked fields."""
-        db_state = getattr(self, "_bitemporal_db_state", None)
-        if db_state is None:
-            # Object was constructed without going through from_db (e.g. manual
-            # instantiation after refresh_from_db with deferred fields).
-            # Fall back to a single SELECT for the prior row.
-            type_ = type(self)
-            try:
-                fresh = type_.all_versions.get(pk=self.pk)
-            except type_.DoesNotExist:
-                return True
-            db_state = {f.attname: getattr(fresh, f.attname) for f in self._meta.concrete_fields}
-            self._bitemporal_db_state = db_state
-
-        for attname in self._tracked_field_names():
-            if getattr(self, attname) != db_state.get(attname):
-                return True
-        return False
-
     # --------------------------------------------------------------------- save
 
     def save(self, *args, **kwargs):
-        """Persist with sequenced-amend semantics on update.
+        """Standard Django save. Initializes bitemporal columns on first INSERT.
 
-        - New rows: stamp a fresh ``entry_id`` and open belief window, then
-          plain INSERT.
-        - Existing rows with no tracked-field changes: plain UPDATE (e.g. tag
-          edits, custom_field changes -- nothing that warrants a new belief).
-        - Existing rows with tracked changes (on Postgres): close prior
-          ``recorded_during`` via raw UPDATE (bypassing ``save()`` and the
-          auto-bump of ``last_updated``), insert a new row carrying the
-          changed values, then mutate ``self`` to point at the new row.
-        - MySQL / non-Postgres: plain save, always.
+        IMPORTANT: ``save()`` does NOT create a new belief row on update --
+        that's an in-place UPDATE, matching Django/Nautobot framework
+        expectations (the UI's edit-view test, REST PATCH, and PUT
+        round-trip all assume pk stability across edits).
+
+        To create a new belief row reflecting a real-world change, call
+        :meth:`amend` explicitly. The two methods have distinct semantics:
+
+        - ``obj.save()``                    -> UPDATE existing row in place
+        - ``obj.amend(field=new_value)``    -> close prior, INSERT successor
+
+        On non-Postgres backends, ``amend()`` falls back to a plain in-place
+        UPDATE (no belief log) and behaves identically to ``save()``.
         """
-        # New row, or non-Postgres backend -- standard save path.
-        if self._state.adding or not BITEMPORAL_ENABLED:
+        if self._state.adding:
             self._initialize_bitemporal_fields_if_needed()
-            return super().save(*args, **kwargs)
+        return super().save(*args, **kwargs)
 
-        # In-progress amend? Skip recursion guard.
-        if getattr(self, "_bitemporal_amend_in_progress", False):
-            return super().save(*args, **kwargs)
+    def amend(self, **field_changes):
+        """Create a new belief row reflecting ``field_changes``.
 
-        # Explicit closure UPDATE (internal); just save normally.
-        update_fields = kwargs.get("update_fields")
-        if update_fields is not None and set(update_fields).issubset({"recorded_during"}):
-            return super().save(*args, **kwargs)
+        On Postgres:
+            1. Close the prior row's ``recorded_during`` window via raw
+               ``UPDATE`` (bypassing ``save()`` to avoid ticking
+               ``last_updated``).
+            2. Insert a successor row carrying ``field_changes`` overlaid
+               on the prior row's values, with a fresh ``entry_id`` and an
+               open ``recorded_during`` window. ``valid_during`` carries
+               over by default (the fact's wall-clock truth window hasn't
+               changed, only our belief about it) -- pass
+               ``valid_during=...`` to override.
+            3. Mutate ``self`` to point at the successor so callers can
+               keep using the same Python instance after the amend.
 
-        if not self._has_tracked_changes():
-            return super().save(*args, **kwargs)
+        On MySQL or other non-Postgres backends: applies ``field_changes``
+        via attribute assignment and calls ``save()``. No belief log,
+        same behavior as a plain edit.
 
-        # Sequenced amend.
-        self._sequenced_amend(*args, **kwargs)
+        Example::
+
+            arecord, created = ARecord.objects.get_or_create(...)
+            if not created and wire_data_differs(arecord, scan):
+                arecord.amend(_ttl=scan.ttl, description=scan.desc)
+
+        Raises:
+            ValueError: if called on an unsaved instance (no prior to close).
+        """
+        if self._state.adding or self.pk is None:
+            raise ValueError(
+                "amend() requires an existing row; call save() to create the first belief."
+            )
+        if not BITEMPORAL_ENABLED:
+            # MySQL / other: plain in-place update.
+            for field, value in field_changes.items():
+                setattr(self, field, value)
+            self.save()
+            return self
+
+        for field, value in field_changes.items():
+            setattr(self, field, value)
+        self._sequenced_amend()
+        return self
 
     def _initialize_bitemporal_fields_if_needed(self) -> None:
         """Make sure recorded_during and valid_during are set on first INSERT."""
@@ -283,16 +262,22 @@ class BitemporalMixin(models.Model):
             self.entry_id = uuid.uuid4()
 
     @transaction.atomic
-    def _sequenced_amend(self, *args, **kwargs) -> None:
-        """Close prior belief window, insert successor, rebind ``self``."""
+    def _sequenced_amend(self) -> None:
+        """Close the prior belief row, insert a successor, rebind ``self``.
+
+        Called by :meth:`amend` after the caller has applied field updates to
+        the in-memory instance. The successor row inherits whatever
+        ``valid_during`` is currently on ``self`` (so an explicit override
+        in the amend call survives; otherwise the prior row's window
+        carries over).
+        """
         type_ = type(self)
         prior_pk = self.pk
-        prior_recorded_during = self._bitemporal_db_state.get("recorded_during")
-        prior_valid_during = self._bitemporal_db_state.get("valid_during")
+        prior_recorded_during = self.recorded_during
         now = timezone.now()
 
-        # 1. Close the prior row. Use queryset.update() to bypass save() (so we
-        # don't trigger another amend) and to avoid ticking last_updated.
+        # 1. Close the prior row's recording window. Use queryset.update() to
+        # bypass save() and avoid ticking last_updated on the historical row.
         type_.all_versions.filter(pk=prior_pk).update(
             recorded_during=DateTimeTZRange(
                 lower=prior_recorded_during.lower if prior_recorded_during else None,
@@ -302,27 +287,12 @@ class BitemporalMixin(models.Model):
         )
 
         # 2. Insert the successor as a fresh row carrying the in-memory values.
-        # If the caller hasn't explicitly updated valid_during, inherit it from
-        # the prior row -- the fact's wall-clock truth window hasn't changed,
-        # only our belief about it.
-        if self.valid_during == prior_valid_during or self.valid_during is None:
-            self.valid_during = prior_valid_during
         self.pk = None
         self.id = None  # for UUID PKs Django assigns a new one on save()
         self.entry_id = uuid.uuid4()
         self.recorded_during = DateTimeTZRange(lower=now, upper=None, bounds="[)")
         self._state.adding = True
-        self._bitemporal_amend_in_progress = True
-        try:
-            super().save(*args, **kwargs)
-        finally:
-            self._bitemporal_amend_in_progress = False
-
-        # Refresh the snapshot so subsequent saves on the same Python instance
-        # compare against the just-written row.
-        self._bitemporal_db_state = {
-            f.attname: getattr(self, f.attname) for f in self._meta.concrete_fields
-        }
+        super().save()
 
     # -------------------------------------------------------- history accessors
 
@@ -330,10 +300,10 @@ class BitemporalMixin(models.Model):
         """Every belief row that shares this row's natural-key identity.
 
         Default implementation matches on the model-declared natural-key
-        fields (``BITEMPORAL_NATURAL_KEY``). Subclasses may override for
+        fields (``natural_key_field_names``). Subclasses may override for
         more complex natural keys.
         """
-        natural_key = getattr(type(self), "BITEMPORAL_NATURAL_KEY", None)
+        natural_key = getattr(type(self), "natural_key_field_names", None)
         if not natural_key:
             return type(self).all_versions.filter(pk=self.pk)
         criteria = {field: getattr(self, field) for field in natural_key}

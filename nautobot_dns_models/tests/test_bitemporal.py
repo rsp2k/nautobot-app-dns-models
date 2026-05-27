@@ -53,17 +53,17 @@ class BitemporalSequencedAmendTests(TestCase):
         self.assertLess(delta_s, 1.0)
 
     def test_amend_closes_prior_and_creates_successor(self):
-        """Changing a tracked field rebinds self to a new pk with fresh entry_id."""
+        """Explicit amend() rebinds self to a new pk with fresh entry_id."""
         a = ARecord.objects.create(name="host.example.com", ip_address=self.ip1, zone=self.zone)
         original_pk = a.pk
         original_entry_id = a.entry_id
 
-        a.description = "moved here"
-        a.save()
+        a.amend(description="moved here")
 
         # Self now points at the successor row.
         self.assertNotEqual(a.pk, original_pk)
         self.assertNotEqual(a.entry_id, original_entry_id)
+        self.assertEqual(a.description, "moved here")
 
         # The prior row should still exist via all_versions, with a closed window.
         prior = ARecord.all_versions.get(pk=original_pk)
@@ -74,14 +74,18 @@ class BitemporalSequencedAmendTests(TestCase):
         self.assertEqual(current.count(), 1)
         self.assertEqual(current.first().pk, a.pk)
 
-    def test_non_tracked_field_change_does_not_amend(self):
-        """Editing only last_updated / _custom_field_data should not produce a new row."""
+    def test_save_does_not_amend(self):
+        """save() does in-place UPDATE; only amend() creates a new belief row.
+
+        This is the deliberate API split: save() is framework-compatible
+        (Nautobot UI / REST PATCH / view tests assume pk stability), while
+        amend() is the explicit ``please rotate the belief log`` call.
+        """
         a = ARecord.objects.create(name="static.example.com", ip_address=self.ip1, zone=self.zone)
         original_pk = a.pk
-        a._custom_field_data = {"note": "edited"}
+        a.description = "edited"
         a.save()
         self.assertEqual(a.pk, original_pk)
-        # Only one belief row.
         self.assertEqual(
             ARecord.all_versions.filter(name="static.example.com", zone=self.zone).count(), 1
         )
@@ -89,10 +93,8 @@ class BitemporalSequencedAmendTests(TestCase):
     def test_history_contains_all_belief_rows(self):
         """history() returns every row that shares the natural key, oldest first."""
         a = ARecord.objects.create(name="multi.example.com", ip_address=self.ip1, zone=self.zone)
-        a.description = "v2"
-        a.save()
-        a.description = "v3"
-        a.save()
+        a.amend(description="v2")
+        a.amend(description="v3")
 
         hist = list(a.history())
         self.assertEqual(len(hist), 3)
@@ -112,10 +114,8 @@ class BitemporalQuerySetTests(TestCase):
 
     def test_current_excludes_amended_rows(self):
         z = DNSZone.objects.create(name="zoneA.example")
-        z.description = "v2"
-        z.save()
-        z.description = "v3"
-        z.save()
+        z.amend(description="v2")
+        z.amend(description="v3")
 
         self.assertEqual(DNSZone.objects.filter(name="zoneA.example").count(), 1)
         self.assertEqual(DNSZone.all_versions.filter(name="zoneA.example").count(), 3)
@@ -131,8 +131,7 @@ class BitemporalQuerySetTests(TestCase):
         between_v1_and_v2 = timezone.now()
         time.sleep(0.01)
 
-        z.description = "v2"
-        z.save()
+        z.amend(description="v2")
 
         rows = DNSZone.all_versions.filter(name="zoneB.example").as_of(between_v1_and_v2)
         self.assertEqual(rows.count(), 1)
@@ -154,8 +153,7 @@ class CNAMEExclusivityHonorsCurrentBeliefsOnly(TestCase):
     def test_amended_cname_does_not_block_new_arecord(self):
         # 1. Create a CNAME, then amend it (closing the prior belief).
         cname = CNAMERecord.objects.create(name="alias", alias="target.example", zone=self.zone)
-        cname.alias = "target2.example"
-        cname.save()
+        cname.amend(alias="target2.example")
 
         # 2. Now "remove" the CNAME by an amend that effectively retires it --
         # for this test we mark the row's recorded_during.upper to now via the
@@ -189,8 +187,7 @@ class PartialUniqueIndexAllowsHistoricalRows(TestCase):
     def test_multiple_historical_rows_allowed(self):
         t = TXTRecord.objects.create(name="spf", text="v=spf1 -all", zone=self.zone)
         for i in range(5):
-            t.text = f"v=spf1 v{i} -all"
-            t.save()
+            t.amend(text=f"v=spf1 v{i} -all")
 
         all_rows = TXTRecord.all_versions.filter(name="spf", zone=self.zone)
         self.assertEqual(all_rows.count(), 6)
@@ -215,8 +212,7 @@ class BitemporalRegistrationTests(TestCase):
             status=self.status,
             transfer_locked=False,
         )
-        reg.transfer_locked = True
-        reg.save()
+        reg.amend(transfer_locked=True)
 
         history = list(reg.history())
         self.assertEqual(len(history), 2)
@@ -230,8 +226,7 @@ class BitemporalManagerSemanticsTests(TestCase):
 
     def test_default_manager_filters_to_current(self):
         z = DNSZone.objects.create(name="manager.example")
-        z.description = "v2"
-        z.save()
+        z.amend(description="v2")
         self.assertEqual(DNSZone.objects.filter(name="manager.example").count(), 1)
         self.assertEqual(DNSZone.all_versions.filter(name="manager.example").count(), 2)
 

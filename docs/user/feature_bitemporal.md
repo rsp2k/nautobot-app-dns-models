@@ -36,22 +36,38 @@ These models gain two-axis history:
 `DNSView`, `DNSRegistrar`, and `DNSViewPrefixAssignment` are config-shaped
 and remain single-row models.
 
-## How "save()" behaves
+## Mutation contract — `save()` vs `amend()`
 
-When you edit a bitemporal row and call `.save()`:
+| Call | What happens | When to use |
+|------|--------------|-------------|
+| `obj.save()` | Standard Django in-place UPDATE. The pk is stable across the call. No new belief row is created. | Edits via Nautobot UI/REST, normal Django flow, anywhere the framework expects pk stability. |
+| `obj.amend(field=new_value, ...)` | Sequenced amend: closes prior `recorded_during` window, INSERTs a successor row with a fresh `entry_id`, and rebinds `self` to the successor. | Ingest pipelines, scanner reconciliation, anywhere you want a new audit-trail entry. |
 
-- If you only touched non-tracked fields (`_custom_field_data`, tags), no
-  new row is created.
-- If any **tracked** field (the model's natural-key fields plus everything
-  the model considers business state) changed, the prior row's
-  `recorded_during.upper` is closed and a new row is inserted with the new
-  values. The Python instance is then rebound to the successor row, so
-  callers see a seamless `.pk` reference after save.
+The split matters because Nautobot's UI views, REST `PATCH`/`PUT`
+endpoints, and the testing framework all assume `save()` is in-place.
+Routing belief-log mutations through an explicit `amend()` keeps both
+contracts intact.
 
-This is the standard "sequenced amend" pattern — every belief is an INSERT;
-the only UPDATE is the timestamp closure, which goes through the queryset
-manager directly (bypassing `save()` and `last_updated` ticks) to keep the
-audit trail honest.
+Example — promoter idiom (the pattern used by `nautobot-app-scanner`):
+
+```python
+obj, created = ARecord.objects.get_or_create(
+    name=name, ip_address=ip, zone=zone,
+    defaults={"_ttl": ttl, "description": desc},
+)
+if not created and wire_data_differs(obj, scan):
+    # Real-world change observed -- rotate the belief log.
+    obj.amend(_ttl=scan.ttl, description=scan.description)
+    # obj.pk is now the successor's pk; obj.entry_id is fresh.
+```
+
+The closure UPDATE on the prior row uses `queryset.update()` directly
+(bypassing `save()` to avoid ticking `last_updated`), so the audit
+trail's "when did the prior belief become superseded" timestamp is
+honest.
+
+On MySQL or other non-Postgres backends, `amend()` falls back to a
+plain in-place UPDATE -- there's no belief log to rotate.
 
 ## Querying
 

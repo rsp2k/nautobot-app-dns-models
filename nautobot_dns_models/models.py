@@ -156,7 +156,7 @@ class DNSZone(BitemporalMixin, DNSModel):
 
     # Natural key used by .history() and the per-row history view to locate
     # all belief rows about the same logical zone.
-    BITEMPORAL_NATURAL_KEY = ("name", "dns_view")
+    natural_key_field_names = ("name", "dns_view")
 
     name = models.CharField(max_length=200, help_text="FQDN of the Zone, w/ TLD. e.g example.com")
     dns_view = ForeignKeyWithAutoRelatedName(
@@ -246,7 +246,7 @@ class DNSZone(BitemporalMixin, DNSModel):
 class DNSRegistration(BitemporalMixin, PrimaryModel):
     """Model representing the registration of a DNS zone with a registrar."""
 
-    BITEMPORAL_NATURAL_KEY = ("dns_registrar", "dns_zone")
+    natural_key_field_names = ("dns_registrar", "dns_zone")
 
     dns_registrar = ForeignKeyWithAutoRelatedName(
         DNSRegistrar,
@@ -425,7 +425,7 @@ class DNSRecord(BitemporalMixin, DNSModel):
 class NSRecord(DNSRecord):
     """NS Record model."""
 
-    BITEMPORAL_NATURAL_KEY = ("name", "server", "zone")
+    natural_key_field_names = ("name", "server", "zone")
 
     server = models.CharField(max_length=200, help_text="FQDN of an authoritative Name Server.")
 
@@ -449,7 +449,7 @@ class NSRecord(DNSRecord):
 class ARecord(DNSRecord):
     """A Record model."""
 
-    BITEMPORAL_NATURAL_KEY = ("name", "ip_address", "zone")
+    natural_key_field_names = ("name", "ip_address", "zone")
 
     ip_address = models.ForeignKey(
         to="ipam.IPAddress",
@@ -496,7 +496,7 @@ class ARecord(DNSRecord):
 class AAAARecord(DNSRecord):
     """AAAA Record model."""
 
-    BITEMPORAL_NATURAL_KEY = ("name", "ip_address", "zone")
+    natural_key_field_names = ("name", "ip_address", "zone")
 
     ip_address = models.ForeignKey(
         to="ipam.IPAddress",
@@ -543,7 +543,7 @@ class AAAARecord(DNSRecord):
 class CNAMERecord(DNSRecord):
     """CNAME Record model."""
 
-    BITEMPORAL_NATURAL_KEY = ("name", "alias", "zone")
+    natural_key_field_names = ("name", "alias", "zone")
 
     alias = models.CharField(max_length=200, help_text="FQDN of the Alias.")
 
@@ -567,7 +567,7 @@ class CNAMERecord(DNSRecord):
 class MXRecord(DNSRecord):
     """MX Record model."""
 
-    BITEMPORAL_NATURAL_KEY = ("name", "mail_server", "zone")
+    natural_key_field_names = ("name", "mail_server", "zone")
 
     preference = models.IntegerField(
         validators=[MinValueValidator(0), MaxValueValidator(65535)],
@@ -596,7 +596,7 @@ class MXRecord(DNSRecord):
 class TXTRecord(DNSRecord):
     """TXT Record model."""
 
-    BITEMPORAL_NATURAL_KEY = ("name", "text", "zone")
+    natural_key_field_names = ("name", "text", "zone")
 
     text = models.CharField(max_length=256, help_text="Text for the TXT Record.")
 
@@ -620,7 +620,7 @@ class TXTRecord(DNSRecord):
 class PTRRecord(DNSRecord):
     """PTR Record model."""
 
-    BITEMPORAL_NATURAL_KEY = ("name", "ptrdname", "zone")
+    natural_key_field_names = ("name", "ptrdname", "zone")
 
     ptrdname = models.CharField(
         max_length=200, help_text="A domain name that points to some location in the domain name space."
@@ -650,7 +650,7 @@ class PTRRecord(DNSRecord):
 class SRVRecord(DNSRecord):
     """SRV Record model."""
 
-    BITEMPORAL_NATURAL_KEY = ("name", "target", "port", "zone")
+    natural_key_field_names = ("name", "target", "port", "zone")
 
     priority = models.IntegerField(
         validators=[MinValueValidator(0), MaxValueValidator(65535)],

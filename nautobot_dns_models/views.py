@@ -588,7 +588,7 @@ class BitemporalHistoryView(View):
         obj = get_object_or_404(model.all_versions, pk=pk)
         rows = list(obj.history())
 
-        natural_key = getattr(model, "BITEMPORAL_NATURAL_KEY", ())
+        natural_key = getattr(model, "natural_key_field_names", ())
         context = {
             "obj": obj,
             "model_name": model._meta.verbose_name,
