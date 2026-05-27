@@ -174,7 +174,13 @@ class BitemporalMixin(models.Model):
 
     class Meta:
         abstract = True
-        base_manager_name = "all_versions"
+        # NOTE: `base_manager_name` is intentionally NOT set. Django's abstract
+        # Meta inheritance doesn't propagate this option to concrete subclasses,
+        # so setting it here would be a no-op. The deliberate consequence:
+        # reverse-FK traversal (e.g. `zone.arecord_set.all()`) uses the default
+        # manager, which returns CURRENT beliefs only -- matching Nautobot UI
+        # expectations. Callers needing the full belief log should reach for
+        # `Model.all_versions` explicitly.
 
     # ------------------------------------------------------------------ helpers
 

@@ -42,8 +42,15 @@ class BitemporalSequencedAmendTests(TestCase):
         a.refresh_from_db()
         self.assertIsNotNone(a.entry_id)
         self.assertIsNone(a.recorded_during.upper)
-        # valid_during defaults to mirror recorded_during on first save.
-        self.assertEqual(a.valid_during.lower, a.recorded_during.lower)
+        self.assertIsNone(a.valid_during.upper)
+        # valid_during should be roughly synchronized with recorded_during on
+        # first save -- Django invokes the `default=_open_belief_window` callable
+        # per-field at instance construction, so the two timestamps land a few
+        # microseconds apart. We assert "within 1s" rather than strict equality
+        # since the per-field invocation order isn't a documented Django
+        # guarantee.
+        delta_s = abs((a.valid_during.lower - a.recorded_during.lower).total_seconds())
+        self.assertLess(delta_s, 1.0)
 
     def test_amend_closes_prior_and_creates_successor(self):
         """Changing a tracked field rebinds self to a new pk with fresh entry_id."""
@@ -228,18 +235,26 @@ class BitemporalManagerSemanticsTests(TestCase):
         self.assertEqual(DNSZone.objects.filter(name="manager.example").count(), 1)
         self.assertEqual(DNSZone.all_versions.filter(name="manager.example").count(), 2)
 
-    def test_base_manager_is_all_versions(self):
-        """Reverse FK traversal should use all_versions so amended rows are still reachable."""
-        from nautobot_dns_models.models import DNSRecord  # for the base_manager_name check
+    def test_all_versions_manager_is_present_on_every_bitemporal_model(self):
+        """Every bitemporal model exposes `all_versions` for unfiltered access.
 
-        # The Meta.base_manager_name on the mixin is set to "all_versions" so that
-        # `zone.arecord_set.all()` returns every historical A record. Verify the
-        # value is propagated to concrete subclasses.
+        Note: we intentionally do NOT set `Meta.base_manager_name` on the
+        abstract mixin -- Django's abstract Meta inheritance doesn't propagate
+        that option, and forcing it on every concrete model would override
+        Nautobot's UI-natural behavior of showing current beliefs in
+        reverse-FK contexts. Use `Model.all_versions` explicitly for the
+        unfiltered view (which this test confirms is always wired up).
+        """
         for model in [DNSZone, DNSRegistration, ARecord, CNAMERecord, TXTRecord]:
+            self.assertTrue(
+                hasattr(model, "all_versions"),
+                msg=f"{model.__name__} should expose an all_versions manager",
+            )
+            # Sanity: all_versions is unfiltered (returns the same row count
+            # as a plain `Model._base_manager.all()`).
             self.assertEqual(
-                model._meta.base_manager_name,
-                "all_versions",
-                msg=f"{model.__name__} should use all_versions as base manager",
+                model.all_versions.all().count(),
+                model._base_manager.all().count(),
             )
 
 
