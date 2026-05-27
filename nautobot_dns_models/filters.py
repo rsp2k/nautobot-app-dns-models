@@ -8,8 +8,22 @@ from nautobot.core.filters import MultiValueCharFilter, NaturalKeyOrPKMultipleCh
 from netaddr import IPAddress as NetIPAddress
 
 from nautobot_dns_models import models
+from nautobot_dns_models.bitemporal import BITEMPORAL_ENABLED
 
 EXPIRATION_DATE_INPUT_FORMATS = ("%Y-%m-%d",)
+
+
+# django-filter cannot auto-generate a Filter for DateTimeRangeField -- it
+# raises AssertionError at FilterSet class-definition time if `fields="__all__"`
+# tries to include `valid_during` / `recorded_during`. We exclude them here so
+# autogen succeeds; point-in-time querying is provided by the viewset-level
+# `?as_of=<iso8601>` param in `BitemporalAPIMixin` (api/views.py), which runs
+# before the filterset processes any params. On MySQL the bitemporal fields
+# don't exist on the model, so this tuple resolves empty and the `exclude`
+# entry is harmless.
+BITEMPORAL_FILTERSET_EXCLUDE = (
+    ("valid_during", "recorded_during", "entry_id") if BITEMPORAL_ENABLED else ()
+)
 
 
 class DNSViewFilterSet(NautobotFilterSet):
@@ -92,6 +106,7 @@ class DNSRegistrationFilterSet(NautobotFilterSet):
 
         model = models.DNSRegistration
         fields = "__all__"
+        exclude = BITEMPORAL_FILTERSET_EXCLUDE
 
 
 class DNSZoneFilterSet(TenancyModelFilterSetMixin, NautobotFilterSet):
@@ -111,6 +126,7 @@ class DNSZoneFilterSet(TenancyModelFilterSetMixin, NautobotFilterSet):
 
         model = models.DNSZone
         fields = "__all__"
+        exclude = BITEMPORAL_FILTERSET_EXCLUDE
 
 
 # pylint: disable=nb-no-model-found, nb-warn-dunder-filter-field
@@ -158,6 +174,7 @@ class NSRecordFilterSet(DNSRecordFilterSet):
 
         model = models.NSRecord
         fields = "__all__"
+        exclude = BITEMPORAL_FILTERSET_EXCLUDE
 
 
 def ip_address_preprocessor(value):
@@ -185,6 +202,7 @@ class ARecordFilterSet(DNSRecordFilterSet):
 
         model = models.ARecord
         fields = "__all__"
+        exclude = BITEMPORAL_FILTERSET_EXCLUDE
 
 
 class AAAARecordFilterSet(DNSRecordFilterSet):
@@ -203,6 +221,7 @@ class AAAARecordFilterSet(DNSRecordFilterSet):
 
         model = models.AAAARecord
         fields = "__all__"
+        exclude = BITEMPORAL_FILTERSET_EXCLUDE
 
 
 class CNAMERecordFilterSet(DNSRecordFilterSet):
@@ -221,6 +240,7 @@ class CNAMERecordFilterSet(DNSRecordFilterSet):
 
         model = models.CNAMERecord
         fields = "__all__"
+        exclude = BITEMPORAL_FILTERSET_EXCLUDE
 
 
 class MXRecordFilterSet(DNSRecordFilterSet):
@@ -239,6 +259,7 @@ class MXRecordFilterSet(DNSRecordFilterSet):
 
         model = models.MXRecord
         fields = "__all__"
+        exclude = BITEMPORAL_FILTERSET_EXCLUDE
 
 
 class TXTRecordFilterSet(DNSRecordFilterSet):
@@ -257,6 +278,7 @@ class TXTRecordFilterSet(DNSRecordFilterSet):
 
         model = models.TXTRecord
         fields = "__all__"
+        exclude = BITEMPORAL_FILTERSET_EXCLUDE
 
 
 class PTRRecordFilterSet(DNSRecordFilterSet):
@@ -275,6 +297,7 @@ class PTRRecordFilterSet(DNSRecordFilterSet):
 
         model = models.PTRRecord
         fields = "__all__"
+        exclude = BITEMPORAL_FILTERSET_EXCLUDE
 
 
 class SRVRecordFilterSet(DNSRecordFilterSet):
@@ -293,3 +316,4 @@ class SRVRecordFilterSet(DNSRecordFilterSet):
 
         model = models.SRVRecord
         fields = "__all__"
+        exclude = BITEMPORAL_FILTERSET_EXCLUDE

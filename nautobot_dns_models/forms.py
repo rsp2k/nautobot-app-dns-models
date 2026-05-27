@@ -17,8 +17,18 @@ from nautobot.tenancy.forms import TenancyFilterForm, TenancyForm
 from nautobot.tenancy.models import Tenant
 
 from nautobot_dns_models import models
+from nautobot_dns_models.bitemporal import BITEMPORAL_ENABLED
 
 EXPIRATION_DATE_INPUT_FORMATS = ("%Y-%m-%d",)
+
+# Hide the bitemporal columns from user-facing add/edit forms. These columns
+# are managed by the sequenced-amend logic in `BitemporalMixin.save()`; users
+# should never directly edit valid_during / recorded_during / entry_id. On
+# MySQL the fields don't exist on the model, so this resolves empty and the
+# `exclude` is harmless.
+BITEMPORAL_FORM_EXCLUDE = (
+    ["valid_during", "recorded_during", "entry_id"] if BITEMPORAL_ENABLED else []
+)
 
 
 class DNSViewForm(NautobotModelForm):
@@ -127,6 +137,7 @@ class DNSRegistrationForm(NautobotModelForm):
 
         model = models.DNSRegistration
         fields = "__all__"
+        exclude = BITEMPORAL_FORM_EXCLUDE
 
 
 class DNSRegistrationBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):
@@ -240,6 +251,7 @@ class DNSZoneForm(NautobotModelForm, TenancyForm):
 
         model = models.DNSZone
         fields = "__all__"
+        exclude = BITEMPORAL_FORM_EXCLUDE
 
 
 class DNSZoneBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):
@@ -288,6 +300,7 @@ class NSRecordForm(NautobotModelForm):
 
         model = models.NSRecord
         fields = "__all__"
+        exclude = BITEMPORAL_FORM_EXCLUDE
 
 
 class NSRecordBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):
@@ -343,6 +356,7 @@ class ARecordForm(NautobotModelForm):
 
         model = models.ARecord
         fields = "__all__"
+        exclude = BITEMPORAL_FORM_EXCLUDE
 
 
 class ARecordBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):
@@ -397,6 +411,7 @@ class AAAARecordForm(NautobotModelForm):
 
         model = models.AAAARecord
         fields = "__all__"
+        exclude = BITEMPORAL_FORM_EXCLUDE
 
 
 class AAAARecordBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):
@@ -445,6 +460,7 @@ class CNAMERecordForm(NautobotModelForm):
 
         model = models.CNAMERecord
         fields = "__all__"
+        exclude = BITEMPORAL_FORM_EXCLUDE
 
 
 class CNAMERecordBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):
@@ -493,6 +509,7 @@ class MXRecordForm(NautobotModelForm):
 
         model = models.MXRecord
         fields = "__all__"
+        exclude = BITEMPORAL_FORM_EXCLUDE
 
 
 class MXRecordBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):
@@ -542,6 +559,7 @@ class TXTRecordForm(NautobotModelForm):
 
         model = models.TXTRecord
         fields = "__all__"
+        exclude = BITEMPORAL_FORM_EXCLUDE
 
 
 class TXTRecordBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):
@@ -590,6 +608,7 @@ class PTRRecordForm(NautobotModelForm):
 
         model = models.PTRRecord
         fields = "__all__"
+        exclude = BITEMPORAL_FORM_EXCLUDE
 
 
 class PTRRecordBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):
@@ -640,6 +659,7 @@ class SRVRecordForm(NautobotModelForm):
 
         model = models.SRVRecord
         fields = "__all__"
+        exclude = BITEMPORAL_FORM_EXCLUDE
 
 
 class SRVRecordBulkEditForm(TagsBulkEditFormMixin, NautobotBulkEditForm):
