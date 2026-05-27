@@ -114,6 +114,7 @@ nav:
       - Using the App: "user/app_use_cases.md"
       - Frequently Asked Questions: "user/faq.md"
       - External Interactions: "user/external_interactions.md"
+      - Bitemporal Records: "user/feature_bitemporal.md"
       - Data Models:
           - DNS Zone: "models/dnszone.md"
           - DNS Registrar: "models/dnsregistrar.md"
