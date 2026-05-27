@@ -15,3 +15,9 @@ The DNS registration model tracks registrar-zone assignments and registration li
 - `dnssec_enabled` (boolean): Whether DNSSEC is enabled.
 
 Uniqueness is enforced for registrar and zone together, and each zone can only have one registration.
+
++++ 2.1.2 "Bitemporal records"
+
+    On PostgreSQL deployments, `DNSRegistration` carries `valid_during`, `recorded_during`, and `entry_id` columns. Changes to registrar-side fields (lock flags, expiration date, DNSSEC status, etc.) close the prior belief window and open a new one — useful for tracking what the registrar told you over time, especially when late-arriving WHOIS data needs to be reconciled with what was already in Nautobot. Uniqueness on `(dns_registrar, dns_zone)` applies to the *current belief slice only*.
+
+    See [Bitemporal Records](../user/feature_bitemporal.md) for the full model, query API, and migration notes. MySQL deployments retain the previous schema and behavior.

@@ -25,3 +25,9 @@ Domain registration attributes are modeled separately in `DNSRegistration`.
     - Empty labels (e.g., consecutive dots or leading/trailing dots) are not allowed
 
     See the [installation guide](../admin/install.md#app-configuration) for configuration options.
+
++++ 2.1.2 "Bitemporal records"
+
+    On PostgreSQL deployments, `DNSZone` carries `valid_during`, `recorded_during`, and `entry_id` columns. Editing a zone creates a new belief row instead of mutating in place — the prior row's `recorded_during` window is closed and a successor with a fresh `entry_id` is inserted. Uniqueness on `(name, dns_view)` applies to the *current belief slice only*; historical rows for the same logical zone coexist.
+
+    See [Bitemporal Records](../user/feature_bitemporal.md) for the full model, query API, and migration notes. MySQL deployments retain the previous schema and behavior.
