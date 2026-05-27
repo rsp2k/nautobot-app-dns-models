@@ -26,6 +26,31 @@ BITEMPORAL_FILTERSET_EXCLUDE = (
 )
 
 
+class BitemporalFilterSetMixin(django_filters.FilterSet):
+    """Declare `?as_of=<iso8601>` as a no-op filter so strict-mode validation
+    doesn't reject it.
+
+    The actual as_of belief-window switch happens in
+    ``BitemporalAPIMixin.get_queryset()`` (api/views.py) -- but Nautobot
+    enables django-filter's strict mode globally, so the filterset
+    validates query params first and rejects any param it doesn't
+    declare with HTTP 400. Declaring `as_of` here as a method-only
+    filter that returns the queryset unchanged lets the param pass
+    validation; the viewset's mixin then consumes it for real.
+
+    NOTE: Must inherit from ``django_filters.FilterSet`` (not a plain
+    ``object`` mixin) so the FilterSetMetaclass picks up the declared
+    ``as_of`` filter -- the metaclass only walks bases that have a
+    ``declared_filters`` attribute, which only ``FilterSet`` subclasses do.
+    """
+
+    as_of = django_filters.IsoDateTimeFilter(method="_noop_as_of")
+
+    def _noop_as_of(self, queryset, name, value):  # pylint: disable=unused-argument
+        # Handled at the viewset layer in BitemporalAPIMixin.get_queryset().
+        return queryset
+
+
 class DNSViewFilterSet(NautobotFilterSet):
     """Filter for DNSView."""
 
@@ -79,7 +104,7 @@ class DNSRegistrarFilterSet(NautobotFilterSet):
         fields = "__all__"
 
 
-class DNSRegistrationFilterSet(NautobotFilterSet):
+class DNSRegistrationFilterSet(BitemporalFilterSetMixin, NautobotFilterSet):
     """Filter for DNSRegistration."""
 
     expiration_date__lte = django_filters.DateFilter(
@@ -109,7 +134,7 @@ class DNSRegistrationFilterSet(NautobotFilterSet):
         exclude = BITEMPORAL_FILTERSET_EXCLUDE
 
 
-class DNSZoneFilterSet(TenancyModelFilterSetMixin, NautobotFilterSet):
+class DNSZoneFilterSet(BitemporalFilterSetMixin, TenancyModelFilterSetMixin, NautobotFilterSet):
     """Filter for DNSZone."""
 
     q = SearchFilter(
@@ -130,8 +155,12 @@ class DNSZoneFilterSet(TenancyModelFilterSetMixin, NautobotFilterSet):
 
 
 # pylint: disable=nb-no-model-found, nb-warn-dunder-filter-field
-class DNSRecordFilterSet(NautobotFilterSet):
-    """Base filter for all DNSRecord models, with support for effective TTL."""
+class DNSRecordFilterSet(BitemporalFilterSetMixin, NautobotFilterSet):
+    """Base filter for all DNSRecord models, with support for effective TTL.
+
+    Mixing in ``BitemporalFilterSetMixin`` here propagates the ``as_of``
+    declared filter to every concrete record FilterSet via MRO inheritance.
+    """
 
     zone = NaturalKeyOrPKMultipleChoiceFilter(
         queryset=models.DNSZone.objects.all(),

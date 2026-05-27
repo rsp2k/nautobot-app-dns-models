@@ -30,6 +30,7 @@ from typing import Iterable
 from django.conf import settings
 from django.db import models, transaction
 from django.utils import timezone
+from nautobot.core.models.querysets import RestrictedQuerySet
 
 
 def _engine_is_postgres(engine: str) -> bool:
@@ -85,8 +86,15 @@ else:  # pragma: no cover -- exercised only on MySQL CI
         return None
 
 
-class BitemporalQuerySet(models.QuerySet):
-    """QuerySet with valid-time and recording-time query helpers."""
+class BitemporalQuerySet(RestrictedQuerySet):
+    """QuerySet with valid-time and recording-time query helpers.
+
+    Inherits from Nautobot's ``RestrictedQuerySet`` (not plain
+    ``models.QuerySet``) so ``.restrict(user, "view")`` works -- that's the
+    method Nautobot's ``ObjectsTablePanel``, ``NautobotUIViewSet``, and the
+    row-level permission system call on every nested queryset. Forgetting
+    this inheritance 500s every detail page that touches a bitemporal model.
+    """
 
     def current(self) -> "BitemporalQuerySet":
         """Restrict to rows whose belief window is still open (``upper IS NULL``).

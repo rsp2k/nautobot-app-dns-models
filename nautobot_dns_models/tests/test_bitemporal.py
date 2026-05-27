@@ -258,6 +258,43 @@ class BitemporalManagerSemanticsTests(TestCase):
             )
 
 
+@unittest.skipUnless(BITEMPORAL_ENABLED, "Bitemporal features require PostgreSQL")
+class BitemporalQuerySetIsRestricted(TestCase):
+    """Regression: the BitemporalQuerySet must inherit Nautobot's RestrictedQuerySet
+    so detail views and ObjectsTablePanel renders don't 500 on
+    `queryset.restrict(user, action)`.
+    """
+
+    def test_restrict_method_is_available(self):
+        from django.contrib.auth import get_user_model
+
+        user_model = get_user_model()
+        user = user_model.objects.create(username="restricttest")
+        DNSZone.objects.create(name="restrict.example")
+        qs = DNSZone.objects.all()
+        # If the queryset doesn't inherit RestrictedQuerySet this raises
+        # AttributeError, which is exactly what the Phase K demo tour
+        # surfaced as a 500 on every bitemporal detail view.
+        restricted = qs.restrict(user, "view")
+        self.assertIsNotNone(restricted)
+
+
+@unittest.skipUnless(BITEMPORAL_ENABLED, "Bitemporal features require PostgreSQL")
+class BitemporalFilterSetAcceptsAsOf(TestCase):
+    """Regression: the bitemporal FilterSets must accept `?as_of=<dt>` as a
+    declared parameter so the strict-mode validation doesn't 400 before the
+    viewset's BitemporalAPIMixin sees it.
+    """
+
+    def test_as_of_passes_filterset_validation(self):
+        from nautobot_dns_models.filters import DNSZoneFilterSet
+
+        # The filterset should declare `as_of` (via BitemporalFilterSetMixin)
+        # so the param doesn't trip "Unknown filter field" in strict mode.
+        fs = DNSZoneFilterSet(data={"as_of": "2026-05-27T17:00:00Z"})
+        self.assertTrue(fs.is_valid(), msg=f"FilterSet rejected as_of: {fs.errors}")
+
+
 class BitemporalDisabledOnMySQLTests(TestCase):
     """Sanity: on a non-Postgres backend, BITEMPORAL_ENABLED is False and the
     bitemporal fields aren't part of the model.
