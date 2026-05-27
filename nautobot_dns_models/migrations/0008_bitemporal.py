@@ -131,6 +131,12 @@ def apply_bitemporal(apps, schema_editor):
         # 4. Drop the prior unique constraint on the natural key. Django's
         # constraint names are version-dependent, so query pg_constraint by
         # the column set rather than by name.
+        #
+        # NOTE: pg_attribute.attname is type `name`, not `text`. array_agg
+        # of `name` values yields `name[]`, and Postgres has no implicit
+        # cast between `name[]` and `text[]` (only at the scalar level).
+        # We must cast attname::text BEFORE aggregating to make the array
+        # comparison work.
         cols_array_sql = "ARRAY[" + ", ".join(f"'{c}'" for c in natural_key) + "]::text[]"
         cursor.execute(
             f"""
@@ -145,7 +151,7 @@ def apply_bitemporal(apps, schema_editor):
                     WHERE t.relname = '{table}'
                       AND c.contype = 'u'
                       AND (
-                        SELECT array_agg(a.attname ORDER BY a.attname)
+                        SELECT array_agg(a.attname::text ORDER BY a.attname::text)
                         FROM unnest(c.conkey) AS k(attnum)
                         JOIN pg_attribute a
                           ON a.attrelid = c.conrelid AND a.attnum = k.attnum
@@ -175,7 +181,16 @@ def apply_bitemporal(apps, schema_editor):
         # restricts this to the open-window slice; closed historical rows are
         # allowed to overlap each other freely (and they often will, since
         # successive amends produce closely-spaced but distinct windows).
+        #
+        # DROP-then-ADD makes this step idempotent. If a prior failed run of
+        # this migration left exclusion constraints in place (CREATE EXTENSION
+        # can implicitly commit on some Postgres versions, breaking the outer
+        # rollback), the retry would otherwise fail with "constraint already
+        # exists." Dropping first guarantees the retry always succeeds.
         gist_expressions = ", ".join(f"{c} WITH =" for c in natural_key)
+        cursor.execute(
+            f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {short}_no_belief_overlap;"
+        )
         cursor.execute(
             f"""
             ALTER TABLE {table}
