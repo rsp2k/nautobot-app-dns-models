@@ -309,3 +309,6 @@ public
 /compose.yaml
 /dump.sql
 /nautobot_dns_models/static/nautobot_dns_models/docs
+
+# Local agent-thread symlinks (thread files live in the originating project repo)
+docs/agent-threads/

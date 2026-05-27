@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% load helpers %}
+
+{% block title %}History - {{ obj }}{% endblock %}
+
+{% block content %}
+<div class="row">
+  <div class="col-md-12">
+    <h1>Belief History — {{ model_name|title }}</h1>
+    <p class="text-muted">
+      Every recorded belief Nautobot has held about this object, ordered oldest first.
+      The <em>natural key</em> below is what ties these rows together as the same logical object.
+    </p>
+
+    <table class="table table-bordered" style="margin-bottom: 1.5em">
+      <tbody>
+        {% for field, value in natural_key_values.items %}
+          <tr>
+            <th style="width: 30%">{{ field }}</th>
+            <td><code>{{ value|placeholder }}</code></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <table class="table table-hover">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>entry_id</th>
+          <th>valid_during</th>
+          <th>recorded_during</th>
+          <th>state</th>
+          <th>last_updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr {% if not row.recorded_during.upper %}class="success"{% endif %}>
+            <td>{{ forloop.counter }}</td>
+            <td><code>{{ row.entry_id|truncatechars:13 }}</code></td>
+            <td><code>{{ row.valid_during }}</code></td>
+            <td><code>{{ row.recorded_during }}</code></td>
+            <td>
+              {% if not row.recorded_during.upper %}
+                <span class="label label-success">current</span>
+              {% else %}
+                <span class="label label-default">superseded</span>
+              {% endif %}
+            </td>
+            <td>{{ row.last_updated|placeholder }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6"><em>No history rows.</em></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -9,6 +9,8 @@ from nautobot.core.models.fields import ForeignKeyWithAutoRelatedName
 from nautobot.extras.models import StatusField
 from nautobot.ipam.choices import IPAddressVersionChoices
 
+from nautobot_dns_models.bitemporal import BITEMPORAL_ENABLED, BitemporalMixin
+
 
 def dns_wire_label_length(label):
     """Return the wire-format (IDNA/Punycode) length of a DNS label."""
@@ -149,8 +151,12 @@ def get_default_view_pk():
     "relationships",
     "webhooks",
 )
-class DNSZone(DNSModel):
+class DNSZone(BitemporalMixin, DNSModel):
     """Model for DNS SOA Records. An SOA Record defines a DNS Zone."""
+
+    # Natural key used by .history() and the per-row history view to locate
+    # all belief rows about the same logical zone.
+    BITEMPORAL_NATURAL_KEY = ("name", "dns_view")
 
     name = models.CharField(max_length=200, help_text="FQDN of the Zone, w/ TLD. e.g example.com")
     dns_view = ForeignKeyWithAutoRelatedName(
@@ -217,7 +223,12 @@ class DNSZone(DNSModel):
     class Meta:
         """Meta attributes for DNSZone."""
 
-        unique_together = [["name", "dns_view"]]
+        # On Postgres the (name, dns_view) uniqueness is enforced by a partial
+        # unique index over the current-belief slice (see migration 0008).
+        # MySQL has no partial indexes, so it falls back to a plain
+        # unique_together -- but bitemporal features aren't available there.
+        if not BITEMPORAL_ENABLED:
+            unique_together = [["name", "dns_view"]]
         verbose_name = "DNS Zone"
         verbose_name_plural = "DNS Zones"
 
@@ -232,8 +243,10 @@ class DNSZone(DNSModel):
     "statuses",
     "webhooks",
 )
-class DNSRegistration(PrimaryModel):
+class DNSRegistration(BitemporalMixin, PrimaryModel):
     """Model representing the registration of a DNS zone with a registrar."""
+
+    BITEMPORAL_NATURAL_KEY = ("dns_registrar", "dns_zone")
 
     dns_registrar = ForeignKeyWithAutoRelatedName(
         DNSRegistrar,
@@ -272,7 +285,8 @@ class DNSRegistration(PrimaryModel):
     class Meta:
         """Meta attributes for DNSRegistration."""
 
-        unique_together = [["dns_registrar", "dns_zone"]]
+        if not BITEMPORAL_ENABLED:
+            unique_together = [["dns_registrar", "dns_zone"]]
         verbose_name = "DNS Registration"
         verbose_name_plural = "DNS Registrations"
 
@@ -303,7 +317,7 @@ class DNSViewPrefixAssignment(BaseModel):
         return f"{self.dns_view}: {self.prefix}"
 
 
-class DNSRecord(DNSModel):
+class DNSRecord(BitemporalMixin, DNSModel):
     """Primary Dns Record model for plugin."""
 
     name = models.CharField(max_length=200, help_text="FQDN of the Record, w/o TLD.")
@@ -367,6 +381,10 @@ class DNSRecord(DNSModel):
         if not enforce or getattr(self, "name", None) is None or getattr(self, "zone_id", None) is None:
             return
 
+        # NOTE: Use the default manager (which is current-only on Postgres) so
+        # CNAMEs that have been amended away don't block new records. On MySQL
+        # the default manager is unfiltered, but there's only one belief per
+        # natural key anyway, so the semantics still hold.
         if isinstance(self, CNAMERecord):
             conflicting_models = (NSRecord, ARecord, AAAARecord, MXRecord, TXTRecord, PTRRecord, SRVRecord)
             for model in conflicting_models:
@@ -407,12 +425,15 @@ class DNSRecord(DNSModel):
 class NSRecord(DNSRecord):
     """NS Record model."""
 
+    BITEMPORAL_NATURAL_KEY = ("name", "server", "zone")
+
     server = models.CharField(max_length=200, help_text="FQDN of an authoritative Name Server.")
 
     class Meta:
         """Meta attributes for NSRecord."""
 
-        unique_together = [["name", "server", "zone"]]
+        if not BITEMPORAL_ENABLED:
+            unique_together = [["name", "server", "zone"]]
         verbose_name = "NS Record"
         verbose_name_plural = "NS Records"
 
@@ -428,6 +449,8 @@ class NSRecord(DNSRecord):
 class ARecord(DNSRecord):
     """A Record model."""
 
+    BITEMPORAL_NATURAL_KEY = ("name", "ip_address", "zone")
+
     ip_address = models.ForeignKey(
         to="ipam.IPAddress",
         on_delete=models.CASCADE,
@@ -439,7 +462,8 @@ class ARecord(DNSRecord):
     class Meta:
         """Meta attributes for ARecord."""
 
-        unique_together = [["name", "ip_address", "zone"]]
+        if not BITEMPORAL_ENABLED:
+            unique_together = [["name", "ip_address", "zone"]]
         verbose_name = "A Record"
         verbose_name_plural = "A Records"
 
@@ -472,6 +496,8 @@ class ARecord(DNSRecord):
 class AAAARecord(DNSRecord):
     """AAAA Record model."""
 
+    BITEMPORAL_NATURAL_KEY = ("name", "ip_address", "zone")
+
     ip_address = models.ForeignKey(
         to="ipam.IPAddress",
         on_delete=models.CASCADE,
@@ -483,7 +509,8 @@ class AAAARecord(DNSRecord):
     class Meta:
         """Meta attributes for AAAARecord."""
 
-        unique_together = [["name", "ip_address", "zone"]]
+        if not BITEMPORAL_ENABLED:
+            unique_together = [["name", "ip_address", "zone"]]
         verbose_name = "AAAA Record"
         verbose_name_plural = "AAAA Records"
 
@@ -516,12 +543,15 @@ class AAAARecord(DNSRecord):
 class CNAMERecord(DNSRecord):
     """CNAME Record model."""
 
+    BITEMPORAL_NATURAL_KEY = ("name", "alias", "zone")
+
     alias = models.CharField(max_length=200, help_text="FQDN of the Alias.")
 
     class Meta:
         """Meta attributes for CNAMERecord."""
 
-        unique_together = [["name", "alias", "zone"]]
+        if not BITEMPORAL_ENABLED:
+            unique_together = [["name", "alias", "zone"]]
         verbose_name = "CNAME Record"
         verbose_name_plural = "CNAME Records"
 
@@ -537,6 +567,8 @@ class CNAMERecord(DNSRecord):
 class MXRecord(DNSRecord):
     """MX Record model."""
 
+    BITEMPORAL_NATURAL_KEY = ("name", "mail_server", "zone")
+
     preference = models.IntegerField(
         validators=[MinValueValidator(0), MaxValueValidator(65535)],
         default=10,
@@ -547,7 +579,8 @@ class MXRecord(DNSRecord):
     class Meta:
         """Meta attributes for MXRecord."""
 
-        unique_together = [["name", "mail_server", "zone"]]
+        if not BITEMPORAL_ENABLED:
+            unique_together = [["name", "mail_server", "zone"]]
         verbose_name = "MX Record"
         verbose_name_plural = "MX Records"
 
@@ -563,12 +596,15 @@ class MXRecord(DNSRecord):
 class TXTRecord(DNSRecord):
     """TXT Record model."""
 
+    BITEMPORAL_NATURAL_KEY = ("name", "text", "zone")
+
     text = models.CharField(max_length=256, help_text="Text for the TXT Record.")
 
     class Meta:
         """Meta attributes for TXTRecord."""
 
-        unique_together = [["name", "text", "zone"]]
+        if not BITEMPORAL_ENABLED:
+            unique_together = [["name", "text", "zone"]]
         verbose_name = "TXT Record"
         verbose_name_plural = "TXT Records"
 
@@ -584,6 +620,8 @@ class TXTRecord(DNSRecord):
 class PTRRecord(DNSRecord):
     """PTR Record model."""
 
+    BITEMPORAL_NATURAL_KEY = ("name", "ptrdname", "zone")
+
     ptrdname = models.CharField(
         max_length=200, help_text="A domain name that points to some location in the domain name space."
     )
@@ -591,7 +629,8 @@ class PTRRecord(DNSRecord):
     class Meta:
         """Meta attributes for PTRRecord."""
 
-        unique_together = [["name", "ptrdname", "zone"]]
+        if not BITEMPORAL_ENABLED:
+            unique_together = [["name", "ptrdname", "zone"]]
         verbose_name = "PTR Record"
         verbose_name_plural = "PTR Records"
 
@@ -610,6 +649,8 @@ class PTRRecord(DNSRecord):
 )
 class SRVRecord(DNSRecord):
     """SRV Record model."""
+
+    BITEMPORAL_NATURAL_KEY = ("name", "target", "port", "zone")
 
     priority = models.IntegerField(
         validators=[MinValueValidator(0), MaxValueValidator(65535)],
@@ -633,6 +674,7 @@ class SRVRecord(DNSRecord):
     class Meta:
         """Meta attributes for SRVRecord."""
 
-        unique_together = [["name", "target", "port", "zone"]]
+        if not BITEMPORAL_ENABLED:
+            unique_together = [["name", "target", "port", "zone"]]
         verbose_name = "SRV Record"
         verbose_name_plural = "SRV Records"

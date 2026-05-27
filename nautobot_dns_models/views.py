@@ -524,3 +524,76 @@ class SRVRecordUIViewSet(views.NautobotUIViewSet):
             ObjectFieldsPanel(weight=100, section=SectionChoices.LEFT_HALF, fields="__all__", additional_fields=["ttl"])
         ]
     )
+
+
+# ---------------------------------------------------------------- BitemporalHistoryView
+
+from django.http import Http404  # noqa: E402  -- grouped with the history view it serves
+from django.shortcuts import get_object_or_404, render  # noqa: E402
+from django.views import View  # noqa: E402
+
+from nautobot_dns_models.bitemporal import BITEMPORAL_ENABLED  # noqa: E402
+
+
+# Map of URL slug -> model class. Kept here (not in urls.py) so the view can
+# do a single import-time lookup without importing every model individually
+# in the URL conf.
+_HISTORY_MODELS = {}
+
+
+def _register_history_models():
+    """Populate _HISTORY_MODELS lazily to avoid circular imports at module load."""
+    if _HISTORY_MODELS:
+        return
+    from nautobot_dns_models import models as m
+
+    _HISTORY_MODELS.update(
+        {
+            "dns-zone": m.DNSZone,
+            "dns-registration": m.DNSRegistration,
+            "ns-record": m.NSRecord,
+            "a-record": m.ARecord,
+            "aaaa-record": m.AAAARecord,
+            "cname-record": m.CNAMERecord,
+            "mx-record": m.MXRecord,
+            "txt-record": m.TXTRecord,
+            "ptr-record": m.PTRRecord,
+            "srv-record": m.SRVRecord,
+        }
+    )
+
+
+class BitemporalHistoryView(View):
+    """
+    Render every belief row for one logical object (matched by natural key).
+
+    Compliance/forensics view: "show me everything Nautobot ever believed
+    about this DNS record." Returns rows ordered by `recorded_during.lower`
+    ascending so the audit trail reads top-to-bottom.
+
+    Disabled on non-Postgres backends -- on MySQL we never produced more than
+    one belief row per natural key, so there's nothing meaningful to show.
+    """
+
+    def get(self, request, model_slug, pk):
+        if not BITEMPORAL_ENABLED:
+            raise Http404("Bitemporal history is only available on PostgreSQL deployments.")
+        _register_history_models()
+        model = _HISTORY_MODELS.get(model_slug)
+        if model is None:
+            raise Http404(f"Unknown bitemporal model: {model_slug}")
+
+        # Walk natural key off the current row -- if the row is amended-away
+        # we still want the history.
+        obj = get_object_or_404(model.all_versions, pk=pk)
+        rows = list(obj.history())
+
+        natural_key = getattr(model, "BITEMPORAL_NATURAL_KEY", ())
+        context = {
+            "obj": obj,
+            "model_name": model._meta.verbose_name,
+            "rows": rows,
+            "natural_key": natural_key,
+            "natural_key_values": {field: getattr(obj, field) for field in natural_key},
+        }
+        return render(request, "nautobot_dns_models/bitemporal_history.html", context)

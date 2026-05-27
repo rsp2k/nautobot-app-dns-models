@@ -1,7 +1,13 @@
 """API views for nautobot_dns_models."""
 
+from django.utils.dateparse import parse_datetime
 from nautobot.apps.api import NautobotModelViewSet
+from rest_framework import status
+from rest_framework.decorators import action
+from rest_framework.exceptions import ParseError
+from rest_framework.response import Response
 
+from nautobot_dns_models.bitemporal import BITEMPORAL_ENABLED
 from nautobot_dns_models.api.serializers import (
     AAAARecordSerializer,
     ARecordSerializer,
@@ -49,6 +55,47 @@ from nautobot_dns_models.models import (
 )
 
 
+class BitemporalAPIMixin:
+    """
+    REST extensions for bitemporal models.
+
+    - ``?as_of=<iso8601>`` on list endpoints returns the belief state
+      Nautobot held at the given instant.
+    - ``GET <detail>/history/`` returns every belief row sharing this row's
+      natural key, oldest first.
+
+    Both extensions are no-ops on MySQL (BITEMPORAL_ENABLED is False).
+    """
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if not BITEMPORAL_ENABLED:
+            return qs
+        as_of = self.request.query_params.get("as_of") if hasattr(self, "request") else None
+        if not as_of:
+            return qs
+        parsed = parse_datetime(as_of)
+        if parsed is None:
+            raise ParseError(detail="`as_of` must be an ISO 8601 datetime (e.g. 2026-05-27T12:00:00Z).")
+        # Switch to the all-versions manager since we're reaching beyond
+        # the current belief slice. Filter on recorded_during__contains.
+        model = qs.model
+        return model.all_versions.filter(recorded_during__contains=parsed)
+
+    @action(detail=True, methods=["get"], url_path="history")
+    def history(self, request, *args, **kwargs):
+        """Return every belief row that shares this row's natural key, oldest first."""
+        if not BITEMPORAL_ENABLED:
+            return Response(
+                {"detail": "Bitemporal history is only available on PostgreSQL."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        obj = self.get_object()
+        rows = obj.history()
+        serializer = self.get_serializer(rows, many=True)
+        return Response(serializer.data)
+
+
 class DNSViewViewSet(NautobotModelViewSet):
     """DNSView API ViewSet."""
 
@@ -77,7 +124,7 @@ class DNSRegistrarViewSet(NautobotModelViewSet):
     filterset_class = DNSRegistrarFilterSet
 
 
-class DNSRegistrationViewSet(NautobotModelViewSet):
+class DNSRegistrationViewSet(BitemporalAPIMixin, NautobotModelViewSet):
     """DNSRegistration API ViewSet."""
 
     queryset = DNSRegistration.objects.all()
@@ -85,7 +132,7 @@ class DNSRegistrationViewSet(NautobotModelViewSet):
     filterset_class = DNSRegistrationFilterSet
 
 
-class DNSZoneViewSet(NautobotModelViewSet):
+class DNSZoneViewSet(BitemporalAPIMixin, NautobotModelViewSet):
     """DNSZone API ViewSet."""
 
     queryset = DNSZone.objects.all()
@@ -95,7 +142,7 @@ class DNSZoneViewSet(NautobotModelViewSet):
     lookup_field = "pk"
 
 
-class NSRecordViewSet(NautobotModelViewSet):
+class NSRecordViewSet(BitemporalAPIMixin, NautobotModelViewSet):
     """NSRecord API ViewSet."""
 
     queryset = NSRecord.objects.all()
@@ -105,7 +152,7 @@ class NSRecordViewSet(NautobotModelViewSet):
     lookup_field = "pk"
 
 
-class ARecordViewSet(NautobotModelViewSet):
+class ARecordViewSet(BitemporalAPIMixin, NautobotModelViewSet):
     """ARecord API ViewSet."""
 
     queryset = ARecord.objects.all()
@@ -115,7 +162,7 @@ class ARecordViewSet(NautobotModelViewSet):
     lookup_field = "pk"
 
 
-class AAAARecordViewSet(NautobotModelViewSet):
+class AAAARecordViewSet(BitemporalAPIMixin, NautobotModelViewSet):
     """AAAARecord API ViewSet."""
 
     queryset = AAAARecord.objects.all()
@@ -125,7 +172,7 @@ class AAAARecordViewSet(NautobotModelViewSet):
     lookup_field = "pk"
 
 
-class CNameRecordViewSet(NautobotModelViewSet):
+class CNameRecordViewSet(BitemporalAPIMixin, NautobotModelViewSet):
     """CNameRecord API ViewSet."""
 
     queryset = CNAMERecord.objects.all()
@@ -135,7 +182,7 @@ class CNameRecordViewSet(NautobotModelViewSet):
     lookup_field = "pk"
 
 
-class MXRecordViewSet(NautobotModelViewSet):
+class MXRecordViewSet(BitemporalAPIMixin, NautobotModelViewSet):
     """MXRecord API ViewSet."""
 
     queryset = MXRecord.objects.all()
@@ -145,7 +192,7 @@ class MXRecordViewSet(NautobotModelViewSet):
     lookup_field = "pk"
 
 
-class TXTRecordViewSet(NautobotModelViewSet):
+class TXTRecordViewSet(BitemporalAPIMixin, NautobotModelViewSet):
     """TXTRecord API ViewSet."""
 
     queryset = TXTRecord.objects.all()
@@ -155,7 +202,7 @@ class TXTRecordViewSet(NautobotModelViewSet):
     lookup_field = "pk"
 
 
-class PTRRecordViewSet(NautobotModelViewSet):
+class PTRRecordViewSet(BitemporalAPIMixin, NautobotModelViewSet):
     """PTRRecord API ViewSet."""
 
     queryset = PTRRecord.objects.all()
@@ -165,7 +212,7 @@ class PTRRecordViewSet(NautobotModelViewSet):
     lookup_field = "pk"
 
 
-class SRVRecordViewSet(NautobotModelViewSet):
+class SRVRecordViewSet(BitemporalAPIMixin, NautobotModelViewSet):
     """SRVRecord API ViewSet."""
 
     queryset = SRVRecord.objects.all()

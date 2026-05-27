@@ -68,6 +68,14 @@ urlpatterns = [
         RedirectView.as_view(url="/plugins/dns/txt-records/add/?zone=%(pk)s&return_url=/plugins/dns/dns-zones/%(pk)s"),
         name="zone_txt_records_add",
     ),
+    # Bitemporal history -- one route serves every bitemporal model. The slug
+    # disambiguates which model the pk belongs to (the view's _HISTORY_MODELS
+    # map resolves it).
+    path(
+        "bitemporal/<str:model_slug>/<uuid:pk>/history/",
+        views.BitemporalHistoryView.as_view(),
+        name="bitemporal_history",
+    ),
 ]
 
 urlpatterns += router.urls
