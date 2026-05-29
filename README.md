@@ -1,4 +1,22 @@
-# Nautobot DNS Models
+# Nautobot DNS Models — Bitemporal Fork
+
+> **This is a fork** of [`nautobot/nautobot-app-dns-models`](https://github.com/nautobot/nautobot-app-dns-models)
+> distributed as **`nautobot-dns-models-bitemporal`** on PyPI.
+>
+> The fork adds bitemporal records (`valid_during` / `recorded_during` / `entry_id`
+> on `DNSZone`, `DNSRegistration`, and every DNS record type) and an explicit
+> `obj.amend()` API for sequenced amends. PostgreSQL-only; MySQL deployments
+> behave identically to upstream.
+>
+> See [`docs/user/feature_bitemporal.md`](docs/user/feature_bitemporal.md) for
+> the model + query API. The import path is unchanged (`import nautobot_dns_models`),
+> so existing Python code targeting upstream works unchanged — only the
+> `pyproject.toml` dependency name changes from `nautobot-dns-models` to
+> `nautobot-dns-models-bitemporal`.
+>
+> **Breaking API change vs upstream 2.1.x**: `obj.save()` is in-place
+> (matching framework expectations); use `obj.amend(field=value)` for the
+> sequenced amend that rotates the belief log.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/nautobot/nautobot-app-dns-models/develop/docs/images/icon-nautobot-dns-models.png" class="logo" height="200px">

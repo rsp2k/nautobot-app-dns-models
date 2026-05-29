@@ -1,17 +1,20 @@
 [tool.poetry]
-name = "nautobot-dns-models"
-version = "2.1.2a0"
-description = "Nautobot DNS Models"
-authors = ["Network to Code, LLC <info@networktocode.com>"]
+name = "nautobot-dns-models-bitemporal"
+version = "2.2.0a1"
+description = "Nautobot DNS Models with bitemporal records (fork of nautobot-dns-models)"
+authors = [
+    "Network to Code, LLC <info@networktocode.com>",
+    "Ryan Malloy <ryan@supported.systems>",
+]
 license = "Apache-2.0"
 readme = "README.md"
-homepage = "https://github.com/nautobot/nautobot-app-dns-models"
-repository = "https://github.com/nautobot/nautobot-app-dns-models"
-documentation = "https://docs.nautobot.com/projects/nautobot-dns-models/en/latest/"
-keywords = ["nautobot", "nautobot-app", "nautobot-plugin"]
+homepage = "https://github.com/rsp2k/nautobot-app-dns-models"
+repository = "https://github.com/rsp2k/nautobot-app-dns-models"
+documentation = "https://github.com/rsp2k/nautobot-app-dns-models/blob/develop/docs/user/feature_bitemporal.md"
+keywords = ["nautobot", "nautobot-app", "nautobot-plugin", "bitemporal", "dns"]
 classifiers = [
     "Intended Audience :: Developers",
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -173,7 +176,7 @@ directory = "changes"
 filename = "docs/admin/release_notes/version_2.1.md"
 template = "development/towncrier_template.j2"
 start_string = "<!-- towncrier release notes start -->"
-issue_format = "[#{issue}](https://github.com/nautobot/nautobot-app-dns-models/issues/{issue})"
+issue_format = "[#{issue}](https://github.com/rsp2k/nautobot-app-dns-models/issues/{issue})"
 
 [[tool.towncrier.type]]
 directory = "breaking"
