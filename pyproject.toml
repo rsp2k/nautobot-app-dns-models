@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "nautobot-dns-models-bitemporal"
-version = "2.2.0a2"
+version = "2.2.0"
 description = "Nautobot DNS Models with bitemporal records (fork of nautobot-dns-models)"
 authors = [
     "Network to Code, LLC <info@networktocode.com>",
