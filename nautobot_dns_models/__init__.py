@@ -4,7 +4,12 @@ from importlib import metadata
 
 from nautobot.apps import ConstanceConfigItem, NautobotAppConfig
 
-__version__ = metadata.version(__name__)
+# NOTE: The distribution name on PyPI differs from the import path -- this is
+# a fork of upstream `nautobot-dns-models` distributed as
+# `nautobot-dns-models-bitemporal` to avoid namespace collision. Don't use
+# `metadata.version(__name__)` here; __name__ is the import path
+# ("nautobot_dns_models") which doesn't match the distribution name.
+__version__ = metadata.version("nautobot-dns-models-bitemporal")
 
 # nautobot.core.cli places preprocessed settings in a nautobot_config module before loading django
 # doing this is a hack but it's the only way we can modify the settings before NautobotAppConfig.constance_config is processed

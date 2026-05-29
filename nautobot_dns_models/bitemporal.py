@@ -37,6 +37,13 @@ from nautobot.core.models.managers import BaseManager
 from nautobot.core.models.querysets import RestrictedQuerySet
 
 
+class ConcurrentAmendError(Exception):
+    """Raised when amend() detects another writer modified the prior row
+    between the read and the close. Callers should re-read the instance
+    via the manager and retry the amend on the fresh row.
+    """
+
+
 def _engine_is_postgres(engine: str) -> bool:
     return "postgresql" in (engine or "").lower()
 
@@ -166,6 +173,33 @@ class BitemporalMixin(models.Model):
             help_text="Stable identifier for this specific belief row (distinct from id).",
         )
 
+    def _snap_window_skew_if_auto_defaulted(self) -> None:
+        """H-2: snap valid_during.lower to recorded_during.lower on first INSERT.
+
+        Django invokes `default=_open_belief_window` PER-FIELD, so the two
+        windows land microseconds apart on a fresh instance. The skew breaks
+        `as_of(t)` queries where t lands between the two timestamps. If both
+        windows are open and their lower bounds are within ~1ms (i.e., they
+        came from the auto-applied default callable rather than an explicit
+        backdate), snap them to share the recorded timestamp.
+        """
+        if not BITEMPORAL_ENABLED:
+            return
+        valid = getattr(self, "valid_during", None)
+        recorded = getattr(self, "recorded_during", None)
+        if valid is None or recorded is None:
+            return
+        try:
+            delta = abs((valid.lower - recorded.lower).total_seconds())
+        except (AttributeError, TypeError):
+            return
+        if (
+            valid.upper is None
+            and recorded.upper is None
+            and delta < 0.001  # 1 ms tolerance for "both auto-applied just now"
+        ):
+            self.valid_during = recorded
+
     objects = BitemporalManager()
     all_versions = AllVersionsManager()
 
@@ -200,22 +234,31 @@ class BitemporalMixin(models.Model):
         """
         if self._state.adding:
             self._initialize_bitemporal_fields_if_needed()
+            self._snap_window_skew_if_auto_defaulted()
         return super().save(*args, **kwargs)
 
     def amend(self, **field_changes):
         """Create a new belief row reflecting ``field_changes``.
 
         On Postgres:
-            1. Close the prior row's ``recorded_during`` window via raw
+            1. Acquire a row-level lock on the prior row (``SELECT FOR UPDATE``).
+            2. Verify the prior row is still the current belief (raise
+               :class:`ConcurrentAmendError` if another writer already
+               closed it).
+            3. Close the prior row's ``recorded_during`` window via raw
                ``UPDATE`` (bypassing ``save()`` to avoid ticking
                ``last_updated``).
-            2. Insert a successor row carrying ``field_changes`` overlaid
+            4. Run ``full_clean()`` on the in-memory instance with the
+               amended values applied -- subclass validators (ARecord
+               IPv4 check, CNAME exclusivity, total wire-length) run on
+               the successor before INSERT.
+            5. Insert a successor row carrying ``field_changes`` overlaid
                on the prior row's values, with a fresh ``entry_id`` and an
                open ``recorded_during`` window. ``valid_during`` carries
                over by default (the fact's wall-clock truth window hasn't
                changed, only our belief about it) -- pass
                ``valid_during=...`` to override.
-            3. Mutate ``self`` to point at the successor so callers can
+            6. Mutate ``self`` to point at the successor so callers can
                keep using the same Python instance after the amend.
 
         On MySQL or other non-Postgres backends: applies ``field_changes``
@@ -228,8 +271,36 @@ class BitemporalMixin(models.Model):
             if not created and wire_data_differs(arecord, scan):
                 arecord.amend(_ttl=scan.ttl, description=scan.desc)
 
+        Caller invariants:
+            - **Outer-transaction rollback**: ``amend()`` opens a savepoint
+              via ``@transaction.atomic``. If the *caller's* outer
+              transaction is later rolled back, the bitemporal mutations
+              are reversed -- but the in-memory ``self`` already had its
+              ``pk`` and ``entry_id`` rotated. After such a rollback,
+              ``self`` references a row that doesn't exist in the
+              database; the next ``self.save()`` or ``self.refresh_from_db()``
+              will raise ``DoesNotExist``. Callers in an outer transaction
+              should either (a) catch the rollback and re-fetch the
+              instance via the manager, or (b) treat the returned ``self``
+              as opaque until the outer transaction commits.
+
+            - **Retries**: catch :class:`ConcurrentAmendError`, re-fetch
+              the instance via ``Model.objects.get(...)`` to see the
+              successor that the other writer created, then retry amend
+              on the fresh row. Do NOT retry on the same in-memory
+              instance -- its ``recorded_during`` is stale.
+
+            - **Validation**: subclass ``clean()`` overrides are invoked.
+              Any ``ValidationError`` raised inside ``full_clean()``
+              rolls back the savepoint cleanly (prior row's close is
+              undone, no successor is inserted).
+
         Raises:
             ValueError: if called on an unsaved instance (no prior to close).
+            ConcurrentAmendError: if another writer already closed the
+                prior row, or if the prior row vanished between read and
+                update.
+            ValidationError: if ``full_clean()`` rejects the successor.
         """
         if self._state.adding or self.pk is None:
             raise ValueError(
@@ -248,15 +319,27 @@ class BitemporalMixin(models.Model):
         return self
 
     def _initialize_bitemporal_fields_if_needed(self) -> None:
-        """Make sure recorded_during and valid_during are set on first INSERT."""
+        """Initialize recorded_during, valid_during, and entry_id on first INSERT.
+
+        Captures `timezone.now()` ONCE and assigns the same DateTimeTZRange
+        instance to both windows. This guarantees `valid_during.lower ==
+        recorded_during.lower` on creation -- relying on a per-field
+        `default=_open_belief_window` callable would invoke `now()` twice
+        and produce microsecond skew, breaking `as_of(t)` queries for `t`
+        landing between the two timestamps.
+        """
         if not BITEMPORAL_ENABLED:
             return
         if getattr(self, "recorded_during", None) is None:
-            self.recorded_during = _open_belief_window()
-        if getattr(self, "valid_during", None) is None:
-            # By default, valid time tracks recording time on initial insert.
-            # Ingest pipelines that backdate facts should set valid_during
-            # explicitly before save().
+            shared_window = _open_belief_window()
+            self.recorded_during = shared_window
+            if getattr(self, "valid_during", None) is None:
+                # By default, valid time tracks recording time on initial insert.
+                # Ingest pipelines that backdate facts should set valid_during
+                # explicitly before save() -- in that case we'll skip this branch.
+                self.valid_during = shared_window
+        elif getattr(self, "valid_during", None) is None:
+            # Caller set recorded_during explicitly but left valid_during empty.
             self.valid_during = self.recorded_during
         if not getattr(self, "entry_id", None):
             self.entry_id = uuid.uuid4()
@@ -270,28 +353,77 @@ class BitemporalMixin(models.Model):
         ``valid_during`` is currently on ``self`` (so an explicit override
         in the amend call survives; otherwise the prior row's window
         carries over).
+
+        Concurrency guarantee:
+            Acquires a row-level lock on the prior row via
+            ``SELECT ... FOR UPDATE`` inside this atomic block. Concurrent
+            ``amend()`` calls on the same prior row serialize at the lock,
+            and the second arrival sees the prior already-closed and raises
+            :class:`ConcurrentAmendError` rather than silently corrupting
+            the close timestamp.
+
+        Validation guarantee:
+            Calls ``full_clean()`` on the successor before INSERT so
+            subclass-level validators (``ARecord``'s IPv4 check,
+            CNAME-exclusivity, total wire-length) run on the new belief
+            row, not just on the first ``save()`` of an instance.
         """
         type_ = type(self)
         prior_pk = self.pk
-        prior_recorded_during = self.recorded_during
+
+        # 1. Lock the prior row inside this savepoint. Concurrent amend() waits
+        # here until the other writer commits or rolls back. After the lock
+        # is granted, re-read the prior's recorded_during from the locked row
+        # (NOT from `self`) -- the locked row is authoritative for whether
+        # someone else closed it while we were waiting.
+        try:
+            prior = type_.all_versions.select_for_update().get(pk=prior_pk)
+        except type_.DoesNotExist:
+            raise ConcurrentAmendError(
+                f"Prior belief row {prior_pk} was deleted between read and amend. "
+                "Re-read the instance and retry."
+            )
+
+        if prior.recorded_during is not None and prior.recorded_during.upper is not None:
+            raise ConcurrentAmendError(
+                f"Belief row {prior_pk} was already closed by another writer "
+                f"at {prior.recorded_during.upper}. Re-read the instance via "
+                f"{type_.__name__}.objects and retry amend on the fresh row."
+            )
+
+        prior_recorded_during = prior.recorded_during
         now = timezone.now()
 
-        # 1. Close the prior row's recording window. Use queryset.update() to
+        # 2. Close the prior row's recording window. Use queryset.update() to
         # bypass save() and avoid ticking last_updated on the historical row.
-        type_.all_versions.filter(pk=prior_pk).update(
+        # Assert exactly one row was affected -- a 0-row result means the
+        # prior vanished between SELECT FOR UPDATE and UPDATE (shouldn't
+        # happen with the lock held, but defensive checks are cheap).
+        affected = type_.all_versions.filter(pk=prior_pk).update(
             recorded_during=DateTimeTZRange(
                 lower=prior_recorded_during.lower if prior_recorded_during else None,
                 upper=now,
                 bounds="[)",
             )
         )
+        if affected != 1:
+            raise ConcurrentAmendError(
+                f"Expected to close exactly 1 prior belief row (pk={prior_pk}); "
+                f"the UPDATE affected {affected} rows. The audit chain is at risk; "
+                f"abort to preserve invariants."
+            )
 
-        # 2. Insert the successor as a fresh row carrying the in-memory values.
+        # 3. Insert the successor as a fresh row carrying the in-memory values.
+        # Run full_clean() FIRST -- subclass validators (ARecord IPv4 check,
+        # CNAME exclusivity, total wire-length) must run on the successor
+        # values, not just on first save(). Without this, amend() can write
+        # invalid rows silently.
         self.pk = None
         self.id = None  # for UUID PKs Django assigns a new one on save()
         self.entry_id = uuid.uuid4()
         self.recorded_during = DateTimeTZRange(lower=now, upper=None, bounds="[)")
         self._state.adding = True
+        self.full_clean()
         super().save()
 
     # -------------------------------------------------------- history accessors

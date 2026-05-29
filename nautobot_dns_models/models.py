@@ -376,10 +376,45 @@ class DNSRecord(BitemporalMixin, DNSModel):
             raise ValidationError({"name": "Total length of DNS name cannot exceed 255 bytes (octets) in wire format."})
 
     def _enforce_cname_exclusivity_if_enabled(self) -> None:
-        """Enforce mutual exclusivity between CNAME and other record types for exact (name, zone) matches."""
+        """Enforce mutual exclusivity between CNAME and other record types for exact (name, zone) matches.
+
+        Concurrency: on Postgres, this method acquires a transaction-scoped
+        advisory lock keyed on ``(zone_id, name)`` BEFORE running the
+        existence checks. Two concurrent transactions trying to create a
+        CNAME and an A record at the same name will serialize at the lock;
+        the second arrival sees the first's row via the
+        ``.objects.filter(...).exists()`` check and raises ``ValidationError``
+        as expected.
+
+        Without the lock, the existence check has a TOCTOU window between
+        "no conflicting record exists" and the actual INSERT -- two
+        concurrent creates could both pass the check and both succeed,
+        violating the exclusivity invariant.
+
+        MySQL deployments don't get the lock (``pg_advisory_xact_lock`` is
+        Postgres-only). The race window exists there as a known
+        limitation; document or use a single-writer pattern.
+        """
         enforce = getattr(constance_config, "nautobot_dns_models__CNAME_RESTRICTION_ENABLED", True)
         if not enforce or getattr(self, "name", None) is None or getattr(self, "zone_id", None) is None:
             return
+
+        # Acquire an advisory lock on (zone_id, name) inside the current
+        # transaction. Released automatically at commit/rollback. Two
+        # transactions racing on the same key block here; the second waits
+        # for the first to finish, then sees the inserted row when it
+        # re-runs the exists() check.
+        if BITEMPORAL_ENABLED:
+            from django.db import connection
+
+            with connection.cursor() as cursor:
+                # hashtext() collapses arbitrary string into a 32-bit int
+                # suitable for pg_advisory_xact_lock(int). Stable per
+                # (zone_id, name) pair across processes.
+                cursor.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    [f"cname-exclusivity:{self.zone_id}:{self.name}"],
+                )
 
         # NOTE: Use the default manager (which is current-only on Postgres) so
         # CNAMEs that have been amended away don't block new records. On MySQL
