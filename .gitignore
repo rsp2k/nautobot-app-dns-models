@@ -312,3 +312,6 @@ public
 
 # Local agent-thread symlinks (thread files live in the originating project repo)
 docs/agent-threads/
+
+# CLAUDE.md is maintainer-side context, not for the public repo
+CLAUDE.md
